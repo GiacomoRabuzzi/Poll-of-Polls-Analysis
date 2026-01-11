@@ -1,0 +1,548 @@
+---
+title: "Modellazione dei Sondaggi Elettorali con Modelli State-Space"
+author: "Rabuzzi Giacomo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    theme: united
+    highlight: tango
+runtime: shiny
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(KFAS)
+library(lubridate)
+library(Matrix)
+library(readxl)
+library(ggrepel)
+
+# helper minimale per salvare qualsiasi tipo di grafico (ggplot, grid o base)
+.save_pdf <- function(plot_obj, file, width = 8, height = 5) {
+  grDevices::pdf(file, width = width, height = height)
+  print(plot_obj)
+  grDevices::dev.off()
+}
+```
+
+
+# Esempio Interattivo
+
+Seleziona un partito da analizzare per confrontare:
+
+- l’evoluzione stimata del consenso nel tempo,
+- la variabilità tra istituti,
+- il bias sistematico (effetto "house"),
+- la decomposizione dell’errore (MSE),
+- e il confronto tra bias reale (rispetto alle elezioni) e bias stimato.
+
+```{r setup_interactive, include=FALSE}
+modelli_calcolati <- readRDS("modelli_precotti.rds")
+partiti <- names(modelli_calcolati)
+```
+
+```{r ui_party_input}
+inputPanel(
+  selectInput("selected_party", "Seleziona Partito:", 
+              choices = partiti, selected = "ÖVP")
+)
+```
+
+## Modello con Bias + Varianza Libera
+```{r}
+# --- VARIANZE ---
+.bfv_varianze <- reactive({
+  modelli_calcolati[[input$selected_party]]$bfv$varianze
+})
+
+output$bfv_plot2 <- renderPlot({
+  .bfv_varianze()
+})
+
+output$dl_bfv_plot2 <- downloadHandler(
+  filename = function() paste0("varianze_", input$selected_party, ".pdf"),
+  content  = function(file) .save_pdf(.bfv_varianze(), file)
+)
+
+tagList(
+  downloadButton("dl_bfv_plot2", "Scarica PDF"),
+  plotOutput("bfv_plot2")
+)
+```
+
+```{r}
+# --- BIAS STIMATO ---
+.bfv_bias <- reactive({
+  modelli_calcolati[[input$selected_party]]$bfv$bias_stimato
+})
+
+output$bfv_plot3 <- renderPlot({
+  .bfv_bias()
+})
+
+output$dl_bfv_plot3 <- downloadHandler(
+  filename = function() paste0("bias_stimato_", input$selected_party, ".pdf"),
+  content  = function(file) .save_pdf(.bfv_bias(), file)
+)
+
+tagList(
+  downloadButton("dl_bfv_plot3", "Scarica PDF"),
+  plotOutput("bfv_plot3")
+)
+```
+
+```{r}
+# --- MSE DECOMPOSITION ---
+.bfv_mse <- reactive({
+  modelli_calcolati[[input$selected_party]]$bfv$mse_decomposition
+})
+
+output$bfv_plot5 <- renderPlot({
+  .bfv_mse()
+})
+
+output$dl_bfv_plot5 <- downloadHandler(
+  filename = function() paste0("mse_decomposition_", input$selected_party, ".pdf"),
+  content  = function(file) .save_pdf(.bfv_mse(), file)
+)
+
+tagList(
+  downloadButton("dl_bfv_plot5", "Scarica PDF"),
+  plotOutput("bfv_plot5")
+)
+```
+
+## Modello Binomiale
+```{r}
+.bin_importance <- reactive({
+  modelli_calcolati[[input$selected_party]]$bin$grafico_importance_ci
+})
+
+output$bin_plot2 <- renderPlot({
+  .bin_importance()
+})
+
+output$dl_bin_plot2 <- downloadHandler(
+  filename = function() paste0("binomiale_importance_ci_", input$selected_party, ".pdf"),
+  content  = function(file) .save_pdf(.bin_importance(), file)
+)
+
+tagList(
+  downloadButton("dl_bin_plot2", "Scarica PDF"),
+  plotOutput("bin_plot2")
+)
+```
+
+## Modello Binomiale con Bias
+```{r}
+.binbias_confronto <- reactive({
+  modelli_calcolati[[input$selected_party]]$binbias$grafico_confronto
+})
+
+output$binbias_plot3 <- renderPlot({
+  .binbias_confronto()
+})
+
+output$dl_binbias_plot3 <- downloadHandler(
+  filename = function() paste0("binomiale_bias_confronto_", input$selected_party, ".pdf"),
+  content  = function(file) .save_pdf(.binbias_confronto(), file)
+)
+
+tagList(
+  downloadButton("dl_binbias_plot3", "Scarica PDF"),
+  plotOutput("binbias_plot3")
+)
+```
+
+## Analisi Istituti
+```{r}
+# scegli i 5 partiti da mostrare in Y (puoi riordinarli/variarli a piacere)
+partiti5 <- c("Lega", "PD", "FdI", "M5S", "FI")
+
+# dataset reattivo: unisce le "mse_decomposition$data" dei 5 partiti
+.mse5_df <- reactive({
+  keep <- intersect(partiti5, names(modelli_calcolati))
+  dplyr::bind_rows(lapply(keep, function(p) {
+    df <- modelli_calcolati[[p]]$bfv$mse_decomposition$data
+    # attacco il nome partito per usarlo in Y
+    df$Partito <- p
+    df
+  }))
+})
+```
+
+```{r}
+.mse5_plot_obj <- reactive({
+  df <- .mse5_df()
+  df$Partito <- factor(df$Partito, levels = intersect(partiti5, unique(df$Partito)))
+  
+  ggplot(df, aes(x = Valore, y = Partito, fill = Componente)) +
+    geom_col() +
+    facet_wrap(~ Istituto, ncol = 4) +
+    labs(
+      title = "MSE composition per institute",
+      x = "MSE", y = NULL, fill = ""
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(plot.title.position = "plot")
+})
+
+# ---- MOSTRO A SCHERMO ----
+output$mse5_plot <- renderPlot({
+  .mse5_plot_obj()
+})
+
+# ---- DOWNLOAD PDF (usa l'oggetto ggplot) ----
+output$dl_mse5_plot <- downloadHandler(
+  filename = function() paste0("mse_5partiti_per_istituto_", format(Sys.Date()), ".pdf"),
+  content  = function(file) {
+    .save_pdf(.mse5_plot_obj(), file, width = 11, height = 9)
+  }
+)
+
+tagList(
+  downloadButton("dl_mse5_plot", "Scarica PDF"),
+  plotOutput("mse5_plot", height = "900px")
+)
+```
+
+```{r}
+# Costruisco un unico dataset: righe = (Istituto, Partito), colonne = Bias e CI
+.bias5_df <- reactive({
+  keep <- intersect(partiti5, names(modelli_calcolati))
+  dplyr::bind_rows(lapply(keep, function(p) {
+    df <- modelli_calcolati[[p]]$bfv$tabella_bias
+    df$Partito <- p
+    # mi assicuro dei nomi standard
+    df <- df %>% dplyr::select(Istituto, Partito, Bias, Lower95, Upper95)
+    df
+  }))
+})
+
+# Comodo: factory del grafico per riuso nel download
+.biasgrid_plot <- reactive({
+  df <- .bias5_df()
+  df$Partito <- factor(df$Partito, levels = intersect(partiti5, unique(df$Partito)))
+  
+  ggplot(df, aes(x = Bias, y = Partito)) +
+    geom_vline(xintercept = 0, linewidth = .3, colour = "grey60") +
+    geom_point(size = 2) +
+    geom_errorbarh(aes(xmin = Lower95, xmax = Upper95), height = .2, linewidth = .6) +
+    facet_wrap(~ Istituto, ncol = 4) +
+    labs(
+      title = "Estimated institute bias (house effect)",
+      subtitle = "Points = estimate; bars = IC 95%; vertical line = 0",
+      x = "Bias (%)", y = NULL
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(plot.title.position = "plot")
+})
+```
+
+```{r}
+# -- OGGETTO GGPLOT con box per ogni pannello + scale x libere --
+.biasgrid_plot_obj <- reactive({
+  df <- .bias5_df()
+  df$Partito <- factor(df$Partito, levels = intersect(partiti5, unique(df$Partito)))
+  
+  ggplot(df, aes(x = Bias, y = Partito)) +
+    geom_vline(xintercept = 0, linewidth = .3, colour = "grey70") +
+    geom_errorbarh(aes(xmin = Lower95, xmax = Upper95), height = .25, linewidth = .6) +
+    geom_point(size = 2) +
+    facet_wrap(~ Istituto, ncol = 4) +
+    coord_cartesian(xlim = c(-2, 2)) +
+    labs(
+      title    = "Estimated institute bias (house effect)",
+      subtitle = "Points = estimate; bars = 95% CI; vertical line = 0",
+      x        = "Bias (%)",
+      y        = NULL
+    ) +
+
+    theme_minimal(base_size = 13) +
+    theme(
+      plot.title.position = "plot",
+      panel.spacing       = unit(0.8, "lines"),          # più spazio tra pannelli
+      panel.background    = element_rect(fill = "white", colour = NA),
+      panel.border        = element_rect(colour = "grey60", fill = NA, linewidth = .6),  # << box
+      strip.background    = element_rect(fill = "grey95", colour = "grey60", linewidth = .6),
+      strip.text          = element_text(face = "bold")
+    )
+})
+
+# -- SCHERMO --
+output$bias_grid_plot <- renderPlot({
+  .biasgrid_plot_obj()
+})
+
+# -- DOWNLOAD PDF: stesso oggetto (mantiene box e scale libere) --
+output$dl_bias_grid_plot <- downloadHandler(
+  filename = function() paste0("bias_partiti_per_istituto_", format(Sys.Date()), ".pdf"),
+  content  = function(file) .save_pdf(.biasgrid_plot_obj(), file, width = 11, height = 9)
+)
+
+
+# -- UI --
+tagList(
+  downloadButton("dl_bias_grid_plot", "Scarica PDF"),
+  plotOutput("bias_grid_plot", height = "900px")
+)
+```
+
+```{r}
+# Dataset: una riga per (Istituto, Partito) con bias e IC
+.biasheat_df <- reactive({
+  keep <- intersect(partiti5, names(modelli_calcolati))
+  dplyr::bind_rows(lapply(keep, function(p) {
+    df <- modelli_calcolati[[p]]$bfv$tabella_bias %>%
+      dplyr::select(Istituto, Bias, Lower95, Upper95) %>%
+      dplyr::mutate(Partito = p)
+    df
+  })) %>%
+    dplyr::mutate(
+      sig = ifelse(Lower95 > 0 | Upper95 < 0, TRUE, FALSE),
+      dir = dplyr::case_when(
+        !sig ~ "Not Significative",
+        Bias > 0 ~ "Over-Estimation",
+        Bias < 0 ~ "Under-Estimation",
+        TRUE ~ "Not Significative"
+      )
+    )
+})
+
+# Plot factory per riuso nel download
+.biasheat_plot <- reactive({
+  df <- .biasheat_df()
+  # Ordini uniformi (facoltativi)
+  df$Partito  <- factor(df$Partito,  levels = partiti5)
+  df$Istituto <- factor(df$Istituto, levels = sort(unique(df$Istituto)))
+  
+  ggplot(df, aes(x = Partito, y = Istituto, fill = dir)) +
+    geom_tile(width = 0.95, height = 0.95, colour = "grey85") +
+    scale_fill_manual(
+      values = c(
+        "Under-Estimation"       = "red3",
+        "Over-Estimation"       = "forestgreen",
+        "Not Significative"= "white"
+      )
+    ) +
+    labs(
+      title = "Bias per institute and party",
+      subtitle = "Red: under-estimate • Green: over-estimate • White: IC95% doesn't include 0",
+      x = NULL, y = NULL, fill = ""
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      plot.title.position = "plot",
+      axis.text.x = element_text(angle = 0, vjust = 0.5),
+      panel.grid = element_blank()
+    )
+})
+```
+
+```{r}
+# --- PLOT ---
+output$bias_heat_plot <- renderPlot({
+  .biasheat_plot()
+})
+
+# --- DOWNLOAD PDF ---
+output$dl_bias_heat_plot <- downloadHandler(
+  filename = function() paste0("bias_heatmap_", format(Sys.Date()), ".pdf"),
+  content  = function(file) .save_pdf(.biasheat_plot(), file, width = 9, height = 10)
+)
+
+# --- UI ---
+tagList(
+  downloadButton("dl_bias_heat_plot", "Scarica PDF"),
+  plotOutput("bias_heat_plot", height = "800px")
+)
+```
+
+```{r}
+# --- COSTRUISCO LONG DATAFRAME: BIAS, VARIANZE, MSE ---
+.mk_bias_long <- function(modelli) {
+  purrr::map_dfr(names(modelli), function(p) {
+    modelli[[p]]$bfv$tabella_bias %>%
+      dplyr::select(Istituto, Bias, Lower95, Upper95) %>%
+      dplyr::mutate(Partito = p,
+                    sig = (Lower95 > 0 | Upper95 < 0))
+  })
+}
+
+.mk_var_long <- function(modelli) {
+  purrr::map_dfr(names(modelli), function(p) {
+    modelli[[p]]$bfv$tabella_varianze %>%
+      dplyr::select(Istituto, Varianza) %>%
+      dplyr::mutate(Partito = p)
+  })
+}
+
+.mk_mse_long <- function(modelli) {
+  purrr::map_dfr(names(modelli), function(p) {
+    # Dati dal ggplot della "MSE composition": colonne = Istituto, Componente, Valore
+    d <- modelli[[p]]$bfv$mse_decomposition$data
+    dplyr::mutate(d, Partito = p)
+  }) %>%
+    tidyr::pivot_wider(names_from = Componente, values_from = Valore) %>%
+    dplyr::mutate(
+      Bias2    = dplyr::coalesce(Bias2, 0),
+      Varianza = dplyr::coalesce(Varianza, 0),
+      MSE      = Bias2 + Varianza
+    ) %>%
+    dplyr::select(Istituto, Partito, MSE)
+}
+
+bias_long <- .mk_bias_long(modelli_calcolati)
+var_long  <- .mk_var_long(modelli_calcolati)
+mse_long  <- .mk_mse_long(modelli_calcolati)
+
+```
+
+```{r}
+inputPanel(
+  selectInput("norm_method", "Trasformazione per partito (prima dell'aggregazione):",
+              c("Z-score (media=0, sd=1)" = "z",
+                "Min-Max (0–1)"           = "minmax",
+                "Nessuna"                 = "none"),
+              selected = "z"),
+  selectInput("sort_metric", "Ordina per metrica:",
+              c("Bias medio assoluto" = "mean_abs_bias",
+                "% bias significativo" = "share_sig",
+                "Bias signed medio"    = "mean_bias",
+                "Varianza media"       = "mean_var",
+                "MSE medio"            = "mean_mse"),
+              selected = "mean_abs_bias")
+)
+
+```
+
+```{r}
+# Helpers di trasformazione PER PARTITO
+.z_per_party <- function(x) {
+  mu <- mean(x, na.rm = TRUE); sdv <- sd(x, na.rm = TRUE)
+  if (is.na(sdv) || sdv == 0) return(rep(0, length(x)))
+  (x - mu) / sdv
+}
+.minmax_per_party <- function(x) {
+  lo <- min(x, na.rm = TRUE); hi <- max(x, na.rm = TRUE)
+  if (!is.finite(lo) || !is.finite(hi) || hi - lo == 0) return(rep(0.5, length(x)))
+  (x - lo) / (hi - lo)
+}
+
+# Applica trasformazione scelta a BIAS, VARIANZA, MSE per ciascun PARTITO
+.norm_joined <- reactive({
+  # Join base (lascia % significativo separata: non si standardizza)
+  base <- bias_long %>%
+    dplyr::select(Istituto, Partito, Bias, sig) %>%
+    dplyr::left_join(var_long, by = c("Istituto","Partito")) %>%
+    dplyr::left_join(mse_long, by  = c("Istituto","Partito"))
+
+  # Per partito, trasforma Bias (signed), Varianza, MSE
+  by_party <- split(base, base$Partito)
+  trans <- switch(input$norm_method,
+                  "z"     = function(df) dplyr::mutate(df,
+                                Bias_t = .z_per_party(Bias),
+                                Var_t  = .z_per_party(Varianza),
+                                MSE_t  = .z_per_party(MSE)),
+                  "minmax"= function(df) dplyr::mutate(df,
+                                Bias_t = .minmax_per_party(Bias),
+                                Var_t  = .minmax_per_party(Varianza),
+                                MSE_t  = .minmax_per_party(MSE)),
+                  "none"  = function(df) dplyr::mutate(df,
+                                Bias_t = Bias, Var_t = Varianza, MSE_t = MSE))
+
+  dplyr::bind_rows(lapply(by_party, trans))
+})
+
+# AGGREGATO: una riga per Istituto con le 5 metriche richieste
+.rank_agg <- reactive({
+  df <- .norm_joined()
+
+  df %>%
+    dplyr::group_by(Istituto) %>%
+    dplyr::summarise(
+      # 1) Bias medio assoluto (sulla versione trasformata)
+      mean_abs_bias = mean(abs(Bias_t), na.rm = TRUE),
+
+      # 2) % bias significativo (NON trasformato)
+      share_sig     = mean(sig, na.rm = TRUE),
+
+      # 3) Bias signed medio (sulla versione trasformata)
+      mean_bias     = mean(Bias_t, na.rm = TRUE),
+
+      # 4) Varianza media (sulla versione trasformata)
+      mean_var      = mean(Var_t,  na.rm = TRUE),
+
+      # 5) MSE medio (sulla versione trasformata)
+      mean_mse      = mean(MSE_t,  na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(.data[[input$sort_metric]]))
+})
+
+```
+
+```{r}
+# Plot lollipop
+.rank_plot <- reactive({
+  lab <- dplyr::recode(input$sort_metric,
+    mean_abs_bias = "Average Absolute Bias",
+    share_sig     = "% significative Bias",
+    mean_bias     = "Average signed Bias",
+    mean_var      = "Average Variance",
+    mean_mse      = "Average MSE"
+  )
+  df <- .rank_agg() %>%
+    dplyr::mutate(val = .data[[input$sort_metric]])
+
+  ggplot(df, aes(x = reorder(Istituto, val), y = val)) +
+    geom_segment(aes(xend = Istituto, y = 0, yend = val), linewidth = .6, colour = "grey60") +
+    geom_point(size = 2) +
+    coord_flip() +
+    labs(title = paste0("Ranking istituti – ", lab),
+         x = NULL, y = lab) +
+    theme_minimal(base_size = 13) +
+    theme(plot.title.position = "plot")
+})
+
+output$rank_plot <- renderPlot({ .rank_plot() })
+
+# Download plot
+output$dl_rank_plot <- downloadHandler(
+  filename = function() paste0("ranking_aggregato_", input$sort_metric, "_", Sys.Date(), ".pdf"),
+  content  = function(file) .save_pdf(.rank_plot(), file, width = 9, height = 7)
+)
+
+# Tabella completa (tutti gli istituti, tutte le metriche)
+output$rank_tbl <- renderTable({
+  .rank_agg() %>%
+    dplyr::mutate(Rank = dplyr::row_number()) %>%
+    dplyr::select(Rank, Istituto,
+                  `Average Absolute Bias`  = mean_abs_bias,
+                  `% significative Bias`   = share_sig,
+                  `Average Signed Bias`    = mean_bias,
+                  `Average Variance`       = mean_var,
+                  `Average MSE`            = mean_mse)
+}, digits = 3)
+
+# Download CSV
+output$dl_rank_tbl <- downloadHandler(
+  filename = function() paste0("ranking_aggregato_", Sys.Date(), ".csv"),
+  content  = function(file) readr::write_csv(.rank_agg(), file)
+)
+
+# UI hooks
+tagList(
+  downloadButton("dl_rank_plot", "Scarica PDF"),
+  plotOutput("rank_plot", height = "800px"),
+  downloadButton("dl_rank_tbl", "Scarica CSV"),
+  tableOutput("rank_tbl")
+)
+
+
+```

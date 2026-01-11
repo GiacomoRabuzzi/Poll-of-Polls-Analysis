@@ -1,0 +1,66 @@
+---
+title: "Sondaggi – App Interattiva (scarico grafici)"
+author: "Rabuzzi Giacomo"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: false
+    number_sections: false
+    theme: united
+    highlight: tango
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(shiny)
+library(tidyverse)
+library(readxl)
+library(ggrepel)
+
+# Carico i modelli precotti
+modelli_calcolati <- readRDS("modelli_precotti.rds")
+partiti <- names(modelli_calcolati)
+
+# Helper per salvare grafici
+save_plot <- function(file, plot, width=8, height=5, dpi=300) {
+  ggplot2::ggsave(filename=file, plot=plot, width=width, height=height, dpi=dpi)
+}
+
+# Funzione riutilizzabile: crea output + download + UI
+add_plot_with_download <- function(id, plot_obj, label="Download PNG") {
+  output[[id]] <- renderPlot({ plot_obj })
+  output[[paste0("dl_", id)]] <- downloadHandler(
+    filename = function() paste0(id, "_", input$selected_party, ".png"),
+    content  = function(file) save_plot(file, plot_obj)
+  )
+  tagList(
+    plotOutput(id),
+    downloadButton(paste0("dl_", id), label)
+  )
+}
+```
+
+```{r}
+inputPanel(
+  selectInput("selected_party", "Seleziona Partito:", choices = partiti, selected = partiti[1])
+)
+```
+
+```{r}
+party_mod <- reactive({ modelli_calcolati[[input$selected_party]]$bfv })
+
+add_plot_with_download("bfv_var",  party_mod()$varianze)
+add_plot_with_download("bfv_bias", party_mod()$bias_stimato)
+add_plot_with_download("bfv_mse",  party_mod()$mse_decomposition)
+```
+
+```{r}
+add_plot_with_download("bin_plot", modelli_calcolati[[input$selected_party]]$bin$grafico_importance_ci)
+```
+
+```{r}
+add_plot_with_download("binbias_cmp", modelli_calcolati[[input$selected_party]]$binbias$grafico_confronto)
+
+```
